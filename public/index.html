@@ -293,6 +293,7 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 16px; t
         <span class="shift-badge shift-in" id="shift-status">داخل</span>
       </div>
       <button class="icon-btn" onclick="toggleTheme()" title="تبديل المظهر"><i class="fas fa-moon" id="theme-icon"></i></button>
+      <button class="btn btn-sm" style="background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow);" onclick="openCloseShiftModal()"><i class="fas fa-lock"></i> قفل الشيفت</button>
       <button class="btn btn-danger btn-sm" onclick="doLogout()"><i class="fas fa-right-from-bracket"></i> خروج</button>
     </div>
   </header>
@@ -794,6 +795,22 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 16px; t
   </div>
 </div>
 
+<!-- CLOSE SHIFT MODAL -->
+<div class="modal-overlay hidden" id="close-shift-modal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <div class="modal-title"><i class="fas fa-lock" style="color:var(--yellow)"></i> قفل الشيفت</div>
+      <button class="icon-btn" onclick="closeModal('close-shift-modal')"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="modal-body" id="close-shift-body" style="font-size:14px;line-height:2;">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('close-shift-modal')">إغلاق</button>
+      <button class="btn btn-primary" onclick="printShiftReport()"><i class="fas fa-print"></i> طباعة التقرير</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===================================================================
 // CONFIGURATION
@@ -1191,6 +1208,82 @@ function doLogout() {
   });
 }
 
+function openCloseShiftModal() {
+  const now = Date.now();
+  const today = new Date().toDateString();
+  const sessions = DB.getSessions().filter(s => new Date(s.startTime).toDateString() === today && s.status === 'closed');
+  const orders = DB.getOrders ? DB.getOrders().filter(o => new Date(o.time || o.timestamp || now).toDateString() === today) : [];
+
+  const totalRevenue = sessions.reduce((s, x) => s + (x.totalCost || 0), 0);
+  const timeRevenue  = sessions.reduce((s, x) => s + (x.timeCost || 0), 0);
+  const orderRevenue = sessions.reduce((s, x) => s + (x.ordersCost || 0), 0);
+  const discounts    = sessions.reduce((s, x) => s + (x.discount || 0), 0);
+  const sessionCount = sessions.length;
+
+  // Cash in drawer: opening balance + revenue - advances paid today
+  const advances = DB.getAdvances ? DB.getAdvances().filter(a => new Date(a.date || a.time || now).toDateString() === today) : [];
+  const advancesTotal = advances.reduce((s, a) => s + (a.amount || 0), 0);
+  const openingCash = parseFloat(document.getElementById('shift-opening-cash')?.value || 0);
+  const cashInDrawer = openingCash + totalRevenue - advancesTotal;
+
+  // Active sessions warning
+  const activeCount = Object.keys(activeSessions).length;
+  const activeWarning = activeCount > 0
+    ? `<div style="background:var(--yellow-bg);color:var(--yellow);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-weight:700;"><i class="fas fa-triangle-exclamation"></i> تحذير: يوجد ${activeCount} جلسة نشطة لم تُغلق بعد</div>`
+    : '';
+
+  // Shift start time
+  const log = DB.getLoginLog ? DB.getLoginLog() : [];
+  const myLog = log.slice().reverse().find(l => l.staffId === (currentUser?.id) && !l.logoutTime);
+  const shiftStart = myLog ? new Date(myLog.loginTime).toLocaleTimeString('ar-EG', {hour:'2-digit',minute:'2-digit'}) : '—';
+
+  document.getElementById('close-shift-body').innerHTML = `
+    ${activeWarning}
+    <div style="background:var(--card);border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+      <div style="font-weight:800;font-size:15px;margin-bottom:10px;color:var(--accent);"><i class="fas fa-clock"></i> معلومات الشيفت</div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">الكاشير</span><span style="font-weight:700;">${currentUser?.name || '—'}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">بداية الشيفت</span><span style="font-weight:700;">${shiftStart}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;"><span style="color:var(--text-muted);">نهاية الشيفت</span><span style="font-weight:700;">${new Date().toLocaleTimeString('ar-EG', {hour:'2-digit',minute:'2-digit'})}</span></div>
+    </div>
+    <div style="background:var(--card);border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+      <div style="font-weight:800;font-size:15px;margin-bottom:10px;color:var(--green);"><i class="fas fa-coins"></i> ملخص الإيرادات</div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">عدد الجلسات المغلقة</span><span style="font-weight:700;">${sessionCount} جلسة</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">إيراد الوقت</span><span style="font-weight:700;">${timeRevenue.toFixed(0)} ${CONFIG.currency}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">إيراد الطلبات</span><span style="font-weight:700;">${orderRevenue.toFixed(0)} ${CONFIG.currency}</span></div>
+      ${discounts > 0 ? `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">إجمالي الخصومات</span><span style="font-weight:700;color:var(--red);">— ${discounts.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:16px;font-weight:900;"><span>صافي الإيراد</span><span style="color:var(--green);">${totalRevenue.toFixed(0)} ${CONFIG.currency}</span></div>
+    </div>
+    <div style="background:var(--card);border-radius:10px;padding:14px 16px;">
+      <div style="font-weight:800;font-size:15px;margin-bottom:10px;color:var(--yellow);"><i class="fas fa-cash-register"></i> الدرج النقدي</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px dashed var(--border);">
+        <span style="color:var(--text-muted);">رصيد أول الشيفت</span>
+        <input type="number" id="shift-opening-cash" min="0" step="1" placeholder="0"
+          style="width:90px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;text-align:center;"
+          oninput="openCloseShiftModal()" value="${openingCash || 0}">
+      </div>
+      ${advancesTotal > 0 ? `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">سلف مدفوعة</span><span style="font-weight:700;color:var(--red);">— ${advancesTotal.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:16px;font-weight:900;"><span>المتبقي في الدرج</span><span style="color:var(--yellow);">${cashInDrawer.toFixed(0)} ${CONFIG.currency}</span></div>
+    </div>
+  `;
+
+  document.getElementById('close-shift-modal').classList.remove('hidden');
+}
+
+function printShiftReport() {
+  const body = document.getElementById('close-shift-body').innerHTML;
+  const win = window.open('', '_blank', 'width=400,height=600');
+  win.document.write(`
+    <html dir="rtl"><head><meta charset="UTF-8"><title>تقرير الشيفت</title>
+    <style>body{font-family:Arial,sans-serif;padding:20px;font-size:13px;direction:rtl;}
+    *{box-sizing:border-box;}</style></head>
+    <body>${body}<br><hr>
+    <div style="text-align:center;font-size:11px;color:#888;">طُبع في ${new Date().toLocaleString('ar-EG')}</div>
+    <script>window.onload=()=>{window.print();window.close();}<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
+
 function initApp() {
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
@@ -1406,12 +1499,8 @@ function startSession() {
     delete pendingTransfers[currentDeviceId];
     savePendingTransfers();
   } else {
-    // Accumulate cost from completed sessions on this device today
-    const allSess = DB.getSessions();
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    prevCostAccum = allSess
-      .filter(s => s.deviceId === currentDeviceId && s.status === 'closed' && s.startTime >= todayStart.getTime())
-      .reduce((sum, s) => sum + (s.totalCost || 0), 0);
+    // Each session starts fresh — no accumulation from previous sessions
+    prevCostAccum = 0;
   }
 
   activeSessions[currentDeviceId] = {
