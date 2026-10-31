@@ -293,6 +293,7 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 16px; t
         <span class="shift-badge shift-in" id="shift-status">داخل</span>
       </div>
       <button class="icon-btn" onclick="toggleTheme()" title="تبديل المظهر"><i class="fas fa-moon" id="theme-icon"></i></button>
+      <button class="btn btn-sm" id="btn-withdrawal" style="background:var(--red-bg);color:var(--red);border:1px solid var(--red);display:none;" onclick="openWithdrawalModal()"><i class="fas fa-money-bill-transfer"></i> سحب</button>
       <button class="btn btn-sm" style="background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow);" onclick="openCloseShiftModal()"><i class="fas fa-lock"></i> قفل الشيفت</button>
       <button class="btn btn-danger btn-sm" onclick="doLogout()"><i class="fas fa-right-from-bracket"></i> خروج</button>
     </div>
@@ -567,7 +568,7 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 16px; t
           <!-- Controls -->
           <div class="session-controls">
             <button class="btn btn-success" id="btn-start" onclick="startSession()"><i class="fas fa-play"></i> بدء</button>
-            <button class="btn btn-danger" id="btn-stop" onclick="stopSession()" disabled><i class="fas fa-stop"></i> إنهاء</button>
+            <button class="btn btn-danger" id="btn-stop" onclick="showPaymentModal()" disabled><i class="fas fa-stop"></i> إنهاء / دفع</button>
             <button class="btn btn-warning btn-sm" id="btn-reset" onclick="resetSession()" disabled><i class="fas fa-rotate-left"></i></button>
             <button class="btn btn-sm" id="btn-transfer" onclick="openTransferModal()" disabled title="نقل لجهاز آخر" style="background:var(--blue);color:#fff;"><i class="fas fa-right-left"></i></button>
           </div>
@@ -811,6 +812,57 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 16px; t
   </div>
 </div>
 
+<!-- PAYMENT MODAL -->
+<div class="modal-overlay hidden" id="payment-modal">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header">
+      <div class="modal-title"><i class="fas fa-money-bill-wave" style="color:var(--green)"></i> تسوية الحساب</div>
+    </div>
+    <div class="modal-body">
+      <div id="payment-summary" style="font-size:14px;margin-bottom:16px;"></div>
+      <div class="form-group">
+        <label class="form-label">المبلغ المدفوع (ج.م)</label>
+        <input type="number" id="paid-amount" class="input" min="0" step="0.5" placeholder="0"
+          oninput="calcRemaining()" style="font-size:18px;font-weight:700;text-align:center;">
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:12px;background:var(--card);border-radius:10px;">
+        <span style="color:var(--text-muted);font-size:14px;">المتبقي / الفكة</span>
+        <span id="remaining-amount" style="font-size:20px;font-weight:900;color:var(--green);">— ج.م</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('payment-modal')">إلغاء</button>
+      <button class="btn btn-success" id="confirm-payment-btn" onclick="confirmPayment()">
+        <i class="fas fa-check"></i> تأكيد الدفع وإغلاق الجلسة
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- CASH WITHDRAWAL MODAL (admin only) -->
+<div class="modal-overlay hidden" id="withdrawal-modal">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-header">
+      <div class="modal-title"><i class="fas fa-money-bill-transfer" style="color:var(--red)"></i> سحب من الدرج</div>
+      <button class="icon-btn" onclick="closeModal('withdrawal-modal')"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">المبلغ (ج.م)</label>
+        <input type="number" id="withdrawal-amount" class="input" min="1" step="1" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">السبب</label>
+        <input type="text" id="withdrawal-reason" class="input" placeholder="مصروف / فواتير / ...">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('withdrawal-modal')">إلغاء</button>
+      <button class="btn btn-danger" onclick="confirmWithdrawal()"><i class="fas fa-minus"></i> سحب</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===================================================================
 // CONFIGURATION
@@ -837,7 +889,7 @@ const DB = {
 
   async load() {
     // Pre-load all known keys in parallel on startup
-    const keys = ['devices','sessions','orders','products','staff','advances','settings','loginlog','seeded','pendingTransfers'];
+    const keys = ['devices','sessions','orders','products','staff','advances','settings','loginlog','seeded','pendingTransfers','withdrawals'];
     await Promise.all(keys.map(k => this._fetch(k)));
   },
 
@@ -1037,11 +1089,14 @@ function updateSessionModalTimer(elapsed, sess) {
       if (remaining === 300) showToast(`تحذير: 5 دقائق على انتهاء جهاز ${currentDeviceId}`, 'warning');
       if (remaining === 60)  showToast(`تحذير: دقيقة واحدة على انتهاء جهاز ${currentDeviceId}`, 'warning');
     } else {
-      // Timer expired — auto-stop and unlock mode buttons
-      setEl('timer-label', '⏰ انتهى الوقت!');
+      // Timer expired — play alarm, show payment modal, do NOT auto-close
       el.style.color = 'var(--red)';
-      showToast(`انتهى وقت جهاز ${currentDeviceId} — يمكن اختيار وضع جديد والبدء`, 'warning');
-      stopSession();
+      setEl('timer-label', '⏰ انتهى الوقت — في انتظار الدفع');
+      if (!sess._alarmFired) {
+        sess._alarmFired = true;
+        playAlarm();
+        showPaymentModal();
+      }
     }
   } else {
     const currentMode = sess.playMode || 'single';
@@ -1220,11 +1275,13 @@ function openCloseShiftModal() {
   const discounts    = sessions.reduce((s, x) => s + (x.discount || 0), 0);
   const sessionCount = sessions.length;
 
-  // Cash in drawer: opening balance + revenue - advances paid today
-  const advances = DB.getAdvances ? DB.getAdvances().filter(a => new Date(a.date || a.time || now).toDateString() === today) : [];
+  // Cash in drawer: opening balance + revenue - advances - withdrawals
+  const advances = DB.getAdvances ? DB.getAdvances().filter(a => new Date(a.date || a.time || now).toDateString() === today && a.status === 'paid') : [];
   const advancesTotal = advances.reduce((s, a) => s + (a.amount || 0), 0);
+  const withdrawals = (DB.get('withdrawals') || []).filter(w => new Date(w.time).toDateString() === today);
+  const withdrawalsTotal = withdrawals.reduce((s, w) => s + (w.amount || 0), 0);
   const openingCash = parseFloat(document.getElementById('shift-opening-cash')?.value || 0);
-  const cashInDrawer = openingCash + totalRevenue - advancesTotal;
+  const cashInDrawer = openingCash + totalRevenue - advancesTotal - withdrawalsTotal;
 
   // Active sessions warning
   const activeCount = Object.keys(activeSessions).length;
@@ -1262,6 +1319,7 @@ function openCloseShiftModal() {
           oninput="openCloseShiftModal()" value="${openingCash || 0}">
       </div>
       ${advancesTotal > 0 ? `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">سلف مدفوعة</span><span style="font-weight:700;color:var(--red);">— ${advancesTotal.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
+      ${withdrawalsTotal > 0 ? `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">مسحوبات (${withdrawals.length})</span><span style="font-weight:700;color:var(--red);">— ${withdrawalsTotal.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
       <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:16px;font-weight:900;"><span>المتبقي في الدرج</span><span style="color:var(--yellow);">${cashInDrawer.toFixed(0)} ${CONFIG.currency}</span></div>
     </div>
   `;
@@ -1284,6 +1342,119 @@ function printShiftReport() {
   win.document.close();
 }
 
+// ===================================================================
+// ALARM SOUND
+// ===================================================================
+function playAlarm() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const beepCount = 6;
+    for (let i = 0; i < beepCount; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'square';
+      osc.frequency.value = i % 2 === 0 ? 880 : 660;
+      gain.gain.setValueAtTime(0.6, ctx.currentTime + i * 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.35 + 0.3);
+      osc.start(ctx.currentTime + i * 0.35);
+      osc.stop(ctx.currentTime + i * 0.35 + 0.3);
+    }
+  } catch(e) { console.warn('Audio not available:', e); }
+}
+
+// ===================================================================
+// PAYMENT FLOW
+// ===================================================================
+function showPaymentModal() {
+  const sess = activeSessions[currentDeviceId];
+  if (!sess) return;
+
+  // Freeze session if still running
+  if (sess.running) {
+    sess.running = false;
+    sess.frozenAt = Date.now();
+    if (sess.segments && sess.segments.length > 0) {
+      const last = sess.segments[sess.segments.length - 1];
+      if (!last.endTime) last.endTime = Date.now();
+    }
+  }
+
+  const timeCost   = calcSegmentsCost(sess.segments || [], currentDeviceId);
+  const ordersCost = calcOrdersCost(sess.orders || []);
+  const prevCost   = sess.prevCost || 0;
+  const discount   = getDiscountValue();
+  const total      = Math.max(0, timeCost + ordersCost + prevCost - discount);
+
+  document.getElementById('payment-summary').innerHTML = `
+    <div style="background:var(--card);border-radius:10px;padding:12px 14px;">
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">وقت اللعب</span><span>${timeCost.toFixed(1)} ${CONFIG.currency}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">الطلبات</span><span>${ordersCost.toFixed(0)} ${CONFIG.currency}</span></div>
+      ${prevCost > 0 ? `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">رصيد سابق</span><span style="color:var(--orange);">${prevCost.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
+      ${discount > 0 ? `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);"><span style="color:var(--text-muted);">خصم</span><span style="color:var(--red);">— ${discount.toFixed(0)} ${CONFIG.currency}</span></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:18px;font-weight:900;"><span>الإجمالي</span><span style="color:var(--green);">${total.toFixed(1)} ${CONFIG.currency}</span></div>
+    </div>
+  `;
+
+  document.getElementById('paid-amount').value = '';
+  document.getElementById('remaining-amount').textContent = '— ج.م';
+  document.getElementById('payment-modal').dataset.total = total;
+  document.getElementById('payment-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('paid-amount').focus(), 100);
+}
+
+function calcRemaining() {
+  const total = parseFloat(document.getElementById('payment-modal').dataset.total || 0);
+  const paid  = parseFloat(document.getElementById('paid-amount').value) || 0;
+  const remaining = paid - total;
+  const el = document.getElementById('remaining-amount');
+  if (paid <= 0) { el.textContent = '— ج.م'; el.style.color = 'var(--text-muted)'; return; }
+  if (remaining < 0) {
+    el.textContent = `ناقص ${Math.abs(remaining).toFixed(1)} ج.م`;
+    el.style.color = 'var(--red)';
+  } else {
+    el.textContent = `فكة: ${remaining.toFixed(1)} ج.م`;
+    el.style.color = 'var(--green)';
+  }
+}
+
+function confirmPayment() {
+  const total = parseFloat(document.getElementById('payment-modal').dataset.total || 0);
+  const paid  = parseFloat(document.getElementById('paid-amount').value) || 0;
+  if (paid < total) {
+    const shortage = (total - paid).toFixed(1);
+    if (!window.confirm(`المبلغ المدفوع أقل من الإجمالي بـ ${shortage} ج.م. هل تريد المتابعة؟`)) return;
+  }
+  closeModal('payment-modal');
+  // Record payment info on session before closing
+  const sess = activeSessions[currentDeviceId];
+  if (sess) { sess._paidAmount = paid; }
+  stopSession(paid);
+}
+
+// ===================================================================
+// CASH WITHDRAWAL (admin only)
+// ===================================================================
+function openWithdrawalModal() {
+  if (!currentUser || currentUser.role !== 'admin') {
+    showToast('هذه الميزة للمدير فقط', 'error'); return;
+  }
+  document.getElementById('withdrawal-amount').value = '';
+  document.getElementById('withdrawal-reason').value = '';
+  document.getElementById('withdrawal-modal').classList.remove('hidden');
+}
+
+function confirmWithdrawal() {
+  const amount = parseFloat(document.getElementById('withdrawal-amount').value) || 0;
+  const reason = document.getElementById('withdrawal-reason').value.trim() || 'سحب نقدي';
+  if (amount <= 0) { showToast('أدخل مبلغاً صحيحاً', 'error'); return; }
+  const withdrawals = DB.get('withdrawals') || [];
+  withdrawals.push({ id: genId(), amount, reason, time: Date.now(), staffId: currentUser.id, staffName: currentUser.name });
+  DB.set('withdrawals', withdrawals);
+  closeModal('withdrawal-modal');
+  showToast(`تم سحب ${amount.toFixed(0)} ج.م من الدرج`, 'success');
+}
+
 function initApp() {
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
@@ -1295,10 +1466,12 @@ function initApp() {
   if (currentUser.role === 'admin') {
     document.getElementById('admin-view').classList.remove('hidden');
     document.getElementById('cashier-view').classList.add('hidden');
+    document.getElementById('btn-withdrawal').style.display = '';
     loadOverview();
   } else {
     document.getElementById('cashier-view').classList.remove('hidden');
     document.getElementById('admin-view').classList.add('hidden');
+    document.getElementById('btn-withdrawal').style.display = 'none';
     renderDevicesGrid();
     initStandalonePanel();
   }
@@ -1539,7 +1712,7 @@ function startSession() {
   renderDevicesGrid();
 }
 
-function stopSession() {
+function stopSession(paidAmount) {
   const sess = activeSessions[currentDeviceId];
   if (!sess) return;
   const now = Date.now();
@@ -1556,6 +1729,7 @@ function stopSession() {
   const prevCost = sess.prevCost || 0;
   const discount = getDiscountValue();
   const totalCost = Math.max(0, timeCost + ordersCost + prevCost - discount);
+  const paid = paidAmount !== undefined ? paidAmount : totalCost;
 
   const sessions = DB.getSessions();
   const si = sessions.findIndex(s => s.id === sess.sessionId);
@@ -1567,6 +1741,8 @@ function stopSession() {
     sessions[si].prevCost = prevCost;
     sessions[si].discount = discount;
     sessions[si].totalCost = totalCost;
+    sessions[si].paidAmount = paid;
+    sessions[si].changeAmount = Math.max(0, paid - totalCost);
     sessions[si].segments = sess.segments;
     sessions[si].playMode = sess.playMode || 'single';
     sessions[si].transferChain = sess.transferChain || [currentDeviceId];
